@@ -15,7 +15,7 @@ if 'ultimo_zap_fungo' not in st.session_state: st.session_state.ultimo_zap_fungo
 
 # --- FUNÇÃO DE DISPARO DO WHATSAPP ---
 def enviar_alerta_whatsapp(mensagem):
-    telefone = "5512996005169"
+    telefone = "+5512996005169"
     api_key = "7714077"
     mensagem_formatada = urllib.parse.quote(mensagem)
     url = f"https://api.callmebot.com/whatsapp.php?phone={telefone}&text={mensagem_formatada}&apikey={api_key}"
