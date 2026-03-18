@@ -1,9 +1,29 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
+import requests
+import urllib.parse
+import time
 
 # 1. Configuração da Página
 st.set_page_config(page_title="top1nfo - Área do Produtor", layout="wide")
+
+# --- MEMÓRIA DO SISTEMA (Evita Spam no WhatsApp) ---
+if 'ultimo_zap_calor' not in st.session_state: st.session_state.ultimo_zap_calor = 0
+if 'ultimo_zap_geada' not in st.session_state: st.session_state.ultimo_zap_geada = 0
+if 'ultimo_zap_fungo' not in st.session_state: st.session_state.ultimo_zap_fungo = 0
+
+# --- FUNÇÃO DE DISPARO DO WHATSAPP ---
+def enviar_alerta_whatsapp(mensagem):
+    telefone = "5512996005169"
+    api_key = "7714077"
+    mensagem_formatada = urllib.parse.quote(mensagem)
+    url = f"https://api.callmebot.com/whatsapp.php?phone={telefone}&text={mensagem_formatada}&apikey={api_key}"
+    
+    try:
+        requests.get(url, timeout=5) 
+    except Exception as e:
+        st.sidebar.error(f"Erro na API do WhatsApp: {e}")
 
 # --- SISTEMA DE LOGIN (A PORTA DE ENTRADA) ---
 def verifica_senha():
@@ -88,11 +108,35 @@ if verifica_senha():
         media_temp = round(df['temperatura'].mean(), 1)
         media_umi = round(df['umidade'].mean(), 1)
 
-        # Alertas Inteligentes
-        if ultima_temp >= 30:
+        # --- SISTEMA DE ALERTAS INTELIGENTES (Com WhatsApp) ---
+        tempo_atual = time.time()
+
+        # 1. Alerta de Calor Extremo (> 33°C)
+        if ultima_temp >= 33.0:
             st.error(f"🚨 ALERTA CRÍTICO: Temperatura atingiu {ultima_temp}°C! Risco de perda de qualidade no grão.")
+            if (tempo_atual - st.session_state.ultimo_zap_calor) > 1800: # 30 min
+                enviar_alerta_whatsapp(f"🚨 ALERTA CRÍTICO top1nfo: Temperatura atingiu {ultima_temp}°C! Risco para o grão.")
+                st.session_state.ultimo_zap_calor = tempo_atual
+
+        # 2. Alerta de Geada (< 4°C)
+        elif ultima_temp <= 4.0:
+            st.error(f"❄️ ALERTA GEADA: Temperatura caiu para {ultima_temp}°C! Risco letal para a planta.")
+            if (tempo_atual - st.session_state.ultimo_zap_geada) > 900: # 15 min
+                enviar_alerta_whatsapp(f"❄️ ALERTA GEADA top1nfo: Temperatura caiu para {ultima_temp}°C! Aja imediatamente.")
+                st.session_state.ultimo_zap_geada = tempo_atual
+
+        # 3. Alerta de Fungos (Umidade > 90% e Temp morna)
+        elif ultima_umi > 90.0 and (20.0 <= ultima_temp <= 25.0):
+            st.warning(f"🍄 ALERTA FUNGOS: Clima favorável para ferrugem do cafeeiro.")
+            if (tempo_atual - st.session_state.ultimo_zap_fungo) > 43200: # 12 horas
+                enviar_alerta_whatsapp(f"🍄 ALERTA FUNGOS top1nfo: Umidade {ultima_umi}% e Temp {ultima_temp}°C. Risco de ferrugem no cafezal.")
+                st.session_state.ultimo_zap_fungo = tempo_atual
+
+        # 4. Condições de Atenção (Apenas na tela)
         elif ultima_temp >= 28:
             st.warning(f"⚠️ ATENÇÃO: Temperatura subindo ({ultima_temp}°C). Monitore a secagem de perto.")
+        
+        # 5. Condição Ideal
         else:
             st.success(f"✅ Clima favorável. Temperatura em condições seguras ({ultima_temp}°C).")
 
