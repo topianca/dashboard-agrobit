@@ -5,28 +5,42 @@ import requests
 import urllib.parse
 import time
 import os
+import numpy as np
 from datetime import datetime, timedelta
 
 # 1. CONFIGURAÇÃO DA PÁGINA
-st.set_page_config(page_title="top1nfo - Inteligência Cafeeira", layout="wide")
+st.set_page_config(page_title="top1nfo - Inteligência Agro", layout="wide")
 
 # Inicializa memória de alertas (Anti-Spam)
-for alerta in ['ultimo_zap_calor', 'ultimo_zap_geada', 'ultimo_zap_fungo', 'ultimo_zap_offline']:
-    if alerta not in st.session_state:
-        st.session_state[alerta] = 0
+alertas_keys = ['ultimo_zap_calor', 'ultimo_zap_geada', 'ultimo_zap_fungo', 'ultimo_zap_offline']
+for key in alertas_keys:
+    if key not in st.session_state:
+        st.session_state[key] = 0
 
-# 2. FUNÇÃO WHATSAPP
-def enviar_alerta_whatsapp(mensagem_pura):
+# 2. FUNÇÕES DE SUPORTE
+def enviar_alerta_whatsapp(mensagem):
     telefone = "%2B5512996005169"
     api_key = "7714077"
-    msg_encoded = urllib.parse.quote(mensagem_pura)
+    msg_encoded = urllib.parse.quote(mensagem)
     url = f"https://api.callmebot.com/whatsapp.php?phone={telefone}&text={msg_encoded}&apikey={api_key}"
     try:
-        res = requests.get(url, timeout=15)
+        res = requests.get(url, timeout=10)
         if res.status_code == 200:
-            st.sidebar.success("✅ Zap enviado!")
+            st.sidebar.success("✅ Alerta enviado ao WhatsApp")
     except:
-        st.sidebar.error("❌ Falha no Zap")
+        st.sidebar.error("❌ Erro ao disparar alerta")
+
+def calcular_ponto_orvalho(T, RH):
+    """Cálculo do Ponto de Orvalho usando a aproximação de Magnus-Tetens"""
+    b, c = 17.67, 243.5
+    gamma = (b * T / (c + T)) + np.log(RH / 100.0)
+    return round((c * gamma) / (b - gamma), 1)
+
+def calcular_sensacao_termica(T, RH):
+    """Cálculo simplificado de Sensação Térmica / Heat Index"""
+    if T < 20: return T # Não se aplica a frio extremo nesta fórmula
+    hi = 0.5 * (T + 61.0 + ((T - 68.0) * 1.2) + (RH * 0.094))
+    return round(hi, 1)
 
 # 3. SISTEMA DE LOGIN
 def verifica_senha():
@@ -34,132 +48,132 @@ def verifica_senha():
     if "senha_correta" not in st.session_state:
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            if os.path.exists("logo.jpg"):
-                st.image("logo.jpg", use_container_width=True)
-            st.markdown("### 🔒 Acesso Restrito - top1nfo")
-            senha = st.text_input("Senha do Produtor:", type="password")
-            if st.button("Entrar no Painel"):
+            if os.path.exists("logo.jpg"): st.image("logo.jpg", use_container_width=True)
+            st.markdown("### 🔒 Área Restrita - top1nfo")
+            senha = st.text_input("Senha de Acesso:", type="password")
+            if st.button("Entrar"):
                 if senha == SENHA_CORRETA:
                     st.session_state["senha_correta"] = True
                     st.rerun()
-                else:
-                    st.error("❌ Senha incorreta.")
+                else: st.error("❌ Acesso negado.")
         return False
     return True
 
-# 4. PAINEL PRINCIPAL
+# 4. DASHBOARD PRINCIPAL
 if verifica_senha():
-    
-    # --- BARRA LATERAL ---
-    if os.path.exists("logo.jpg"):
-        st.sidebar.image("logo.jpg", width=150)
-    
-    st.sidebar.header("🗓️ Filtro de Período")
+    # BARRA LATERAL
+    if os.path.exists("logo.jpg"): st.sidebar.image("logo.jpg", width=150)
+    st.sidebar.header("🗓️ Filtros")
     hoje = datetime.now()
     ontem = hoje - timedelta(days=1)
-    data_inicio = st.sidebar.date_input("Início", ontem)
-    data_fim = st.sidebar.date_input("Fim", hoje)
+    data_ini = st.sidebar.date_input("Data Inicial", ontem)
+    data_fim = st.sidebar.date_input("Data Final", hoje)
 
     DB_URL = "postgresql://postgres:wQsuidbkKmMEmLCpNPuCwQCvdsUAdCUl@ballast.proxy.rlwy.net:56019/railway"
 
     @st.cache_data(ttl=10)
-    def carregar_dados(d_ini, d_fim):
+    def carregar_dados(d1, d2):
         try:
             conn = psycopg2.connect(DB_URL)
             query = f"""
-                SELECT data_hora, temperatura, umidade, sensor_id
+                SELECT data_hora, temperatura, umidade, sensor_id 
                 FROM leituras_cafe 
-                WHERE data_hora::date BETWEEN '{d_ini}' AND '{d_fim}'
-                ORDER BY data_hora DESC 
-                LIMIT 2000
+                WHERE data_hora::date BETWEEN '{d1}' AND '{d2}'
+                ORDER BY data_hora DESC LIMIT 3000
             """
             df = pd.read_sql(query, conn)
             conn.close()
             df['data_hora'] = pd.to_datetime(df['data_hora'])
             return df
         except Exception as e:
-            st.error(f"Erro no banco: {e}")
+            st.error(f"Erro de Conexão: {e}")
             return pd.DataFrame()
 
-    # --- CABEÇALHO ---
-    st.title("🚜 Inteligência Agronômica - Fazenda Piloto")
-    st.markdown(f"Monitoramento top1nfo focado em produtividade cafeeira.")
+    df = carregar_dados(data_ini, data_fim)
+
+    st.title("🚜 Painel de Inteligência Cafeeira")
+    st.markdown("Monitoramento de precisão top1nfo para alta produtividade.")
     st.divider()
 
-    df = carregar_dados(data_inicio, data_fim)
-
     if not df.empty:
-        # A) WATCHDOG (SENSOR OFFLINE)
-        u_leitura = df['data_hora'].iloc[0]
-        agora = pd.Timestamp.now()
-        diff_min = (agora.replace(tzinfo=None) - u_leitura.replace(tzinfo=None)).total_seconds() / 60
+        # --- PROCESSAMENTO DE DADOS ATUAIS ---
+        atual = df.iloc[0]
+        anterior = df.iloc[1] if len(df) > 1 else atual
         
-        if diff_min > 20:
-            st.warning(f"⚠️ **SENSOR OFFLINE:** Sem sinal há {int(diff_min)} min. Verifique a bateria/WiFi.")
-            if (time.time() - st.session_state.ultimo_zap_offline) > 3600:
-                enviar_alerta_whatsapp(f"🚨 Sensor top1nfo Offline na Fazenda ha {int(diff_min)} minutos!")
-                st.session_state.ultimo_zap_offline = time.time()
-
-        # B) LÓGICA AGRONÔMICA (DADOS ATUAIS)
-        u_temp = df['temperatura'].iloc[0]
-        u_umi = df['umidade'].iloc[0]
-        t_ant = df['temperatura'].iloc[1] if len(df) > 1 else u_temp
-
-        # Cálculo do Ponto de Orvalho (Fórmula Simplificada)
-        p_orvalho = round(u_temp - ((100 - u_umi) / 5), 1)
-
-        # Cálculo de Risco de Ferrugem (Window: 18-28°C + Umi > 90%)
+        T, H = atual['temperatura'], atual['umidade']
+        dT = round(T - anterior['temperatura'], 1)
+        
+        orvalho = calcular_ponto_orvalho(T, H)
+        sensacao = calcular_sensacao_termica(T, H)
+        
+        # --- LÓGICA DE RISCOS ---
         risco_ferrugem = "BAIXO"
-        cor_metric = "normal"
-        if 18 <= u_temp <= 28 and u_umi > 90:
+        cor_ferrugem = "normal"
+        if 18 <= T <= 28 and H > 90:
             risco_ferrugem = "ALTO"
-            cor_metric = "inverse" # Vermelho no metric
+            cor_ferrugem = "inverse"
 
-        # C) INDICADORES VISUAIS
-        st.subheader("📊 Condições de Campo")
+        # --- EXIBIÇÃO DE MÉTRICAS ---
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Temperatura", f"{u_temp} °C", f"{round(u_temp - t_ant, 1)} °C", delta_color="inverse")
-        c2.metric("Umidade do Ar", f"{u_umi} %")
-        c3.metric("Risco Ferrugem", risco_ferrugem, delta="Monitorar" if risco_ferrugem == "ALTO" else "Estável", delta_color=cor_metric)
-        c4.metric("Ponto Orvalho", f"{p_orvalho} °C")
+        c1.metric("Temperatura", f"{T} °C", f"{dT} °C", delta_color="inverse")
+        c2.metric("Umidade Relativa", f"{H} %")
+        c3.metric("Ponto de Orvalho", f"{orvalho} °C", "Folha Seca" if T > orvalho + 2 else "Risco Orvalho")
+        c4.metric("Risco de Ferrugem", risco_ferrugem, delta=risco_ferrugem, delta_color=cor_ferrugem)
 
-        # D) ALERTAS CRÍTICOS (WHATSAPP)
-        t_atual = time.time()
-        # Calor (Escaldadura)
-        if u_temp >= 33.0 and (t_atual - st.session_state.ultimo_zap_calor) > 1800:
-            enviar_alerta_whatsapp(f"🚨 ALERTA ESCALDADURA: {u_temp}C detectado. Risco ao fruto do cafe!")
-            st.session_state.ultimo_zap_calor = t_atual
-        # Geada
-        elif u_temp <= 4.0 and (t_atual - st.session_state.ultimo_zap_geada) > 900:
-            enviar_alerta_whatsapp(f"❄️ ALERTA GEADA: Temperatura caiu para {u_temp}C!")
-            st.session_state.ultimo_zap_geada = t_atual
-        # Ferrugem (Novo Alerta)
-        elif risco_ferrugem == "ALTO" and (t_atual - st.session_state.ultimo_zap_fungo) > 43200: # 12h
-            enviar_alerta_whatsapp(f"🍄 ALERTA FUNGOS: Clima favoravel para Ferrugem ({u_temp}C, {u_umi}%).")
-            st.session_state.ultimo_zap_fungo = t_atual
+        # --- SEÇÃO DE ALERTAS ATIVOS ---
+        st.subheader("🚨 Alertas de Campo")
+        t_agora = time.time()
+        
+        # Alerta Offline
+        diff_offline = (pd.Timestamp.now().replace(tzinfo=None) - atual['data_hora'].replace(tzinfo=None)).total_seconds() / 60
+        if diff_offline > 20:
+            st.error(f"⚠️ SENSOR OFFLINE: Última leitura há {int(diff_offline)} min.")
+            if (t_agora - st.session_state.ultimo_zap_offline) > 3600:
+                enviar_alerta_whatsapp(f"ALERTA: Sensor top1nfo Offline ha {int(diff_offline)} min!")
+                st.session_state.ultimo_zap_offline = t_agora
+
+        # Alerta Calor / Frio / Fungo
+        if T >= 33.0:
+            st.warning(f"🔥 CALOR CRÍTICO: {T}°C (Risco de Escaldadura)")
+            if (t_agora - st.session_state.ultimo_zap_calor) > 1800:
+                enviar_alerta_whatsapp(f"ALERTA CALOR: {T}C na fazenda!")
+                st.session_state.ultimo_zap_calor = t_agora
+        
+        if T <= 4.0:
+            st.info(f"❄️ RISCO DE GEADA: {T}°C")
+            if (t_agora - st.session_state.ultimo_zap_geada) > 900:
+                enviar_alerta_whatsapp(f"ALERTA GEADA: {T}C detectado!")
+                st.session_state.ultimo_zap_geada = t_agora
+
+        if risco_ferrugem == "ALTO":
+            st.warning("🍄 RISCO DE FUNGOS: Condição ideal para Ferrugem do Café.")
+            if (t_agora - st.session_state.ultimo_zap_fungo) > 43200: # 12 horas
+                enviar_alerta_whatsapp("ALERTA FUNGOS: Clima favoravel a ferrugem nas ultimas horas.")
+                st.session_state.ultimo_zap_fungo = t_agora
 
         st.divider()
 
-        # E) GRÁFICOS E AUDITORIA
-        col_graf, col_info = st.columns([3, 1])
-        with col_graf:
-            st.markdown("### 📈 Histórico Climático")
+        # --- GRÁFICOS ---
+        col_g1, col_g2 = st.columns([2, 1])
+        with col_g1:
+            st.markdown("### 📈 Evolução Climática")
             st.line_chart(df.set_index('data_hora')[['temperatura', 'umidade']])
         
-        with col_info:
-            st.markdown("### 📝 Resumo")
+        with col_g2:
+            st.markdown("### 📋 Resumo do Período")
             st.write(f"**Máxima:** {df['temperatura'].max()} °C")
             st.write(f"**Mínima:** {df['temperatura'].min()} °C")
-            st.write(f"**Média Umi:** {round(df['umidade'].mean(), 1)} %")
-            if st.button("📥 Exportar CSV"):
-                df.to_csv("dados_fazenda.csv", index=False)
-                st.success("Arquivo gerado!")
+            st.write(f"**Sensação Atual:** {sensacao} °C")
+            st.write(f"**Registros no banco:** {len(df)}")
+            if st.button("📊 Baixar Relatório CSV"):
+                df.to_csv("relatorio_top1nfo.csv", index=False)
+                st.success("Download pronto!")
 
-        with st.expander(f"🔍 Auditoria Completa ({len(df)} registros)"):
+        with st.expander("🔍 Log de Auditoria"):
             st.dataframe(df, use_container_width=True)
-            
-        if st.sidebar.button("Sair (Logoff)"):
+
+        if st.sidebar.button("Logoff"):
             del st.session_state["senha_correta"]
             st.rerun()
     else:
-        st.warning(f"Sem dados para o período de {data_inicio.strftime('%d/%m/%Y')} até {data_fim.strftime('%d/%m/%Y')}.")
+        st.warning("Nenhum dado encontrado para as datas selecionadas.")
