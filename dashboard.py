@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
-import requests
-import urllib.parse
 import time
 import numpy as np
 import plotly.graph_objects as go
@@ -19,54 +17,16 @@ st.set_page_config(
 
 DB_URL = "postgresql://postgres:wQsuidbkKmMEmLCpNPuCwQCvdsUAdCUl@ballast.proxy.rlwy.net:56019/railway"
 
-# Anti-spam: cooldowns por tipo de alerta (segundos)
-COOLDOWNS = {
-    "ultimo_zap_geada":       900,
-    "ultimo_zap_phoma":       10800,
-    "ultimo_zap_ferrugem":    43200,
-    "ultimo_zap_escaldadura": 1800,
-    "ultimo_zap_offline":     3600,
-}
-for key in COOLDOWNS:
-    if key not in st.session_state:
-        st.session_state[key] = 0.0
-
 # ============================================================
 # 2. FUNÇÕES AUXILIARES
 # ============================================================
-def enviar_alerta_whatsapp(mensagem, chave_cooldown):
-    """Envia alerta WhatsApp com cooldown individual por tipo de risco."""
-    agora = time.time()
-    if (agora - st.session_state[chave_cooldown]) < COOLDOWNS[chave_cooldown]:
-        return
-    telefone = "%2B5512996005169"
-    api_key  = "7714077"
-    url = (
-        f"https://api.callmebot.com/whatsapp.php"
-        f"?phone={telefone}"
-        f"&text={urllib.parse.quote(mensagem)}"
-        f"&apikey={api_key}"
-    )
-    try:
-        res = requests.get(url, timeout=10)
-        if res.status_code == 200:
-            st.session_state[chave_cooldown] = agora
-            st.sidebar.success("✅ Alerta WhatsApp enviado!")
-        else:
-            st.sidebar.warning(f"⚠️ CallMeBot retornou HTTP {res.status_code}")
-    except Exception:
-        st.sidebar.error("❌ Erro ao disparar alerta WhatsApp")
-
-
 def calcular_ponto_orvalho(T, RH):
-    """Ponto de Orvalho — Magnus-Tetens. max(RH, 0.01) evita log(0)."""
     b, c  = 17.67, 243.5
     gamma = (b * T / (c + T)) + np.log(max(RH, 0.01) / 100.0)
     return round((c * gamma) / (b - gamma), 1)
 
 
 def calcular_sensacao_termica(T, RH):
-    """Heat Index simplificado — válido acima de 20°C."""
     if T < 20:
         return round(T, 1)
     hi = 0.5 * (T + 61.0 + ((T - 68.0) * 1.2) + (RH * 0.094))
@@ -77,15 +37,9 @@ def calcular_sensacao_termica(T, RH):
 # ============================================================
 @st.cache_data(ttl=20)
 def carregar_dados(d1, d2):
-    """
-    Retorna leituras do período filtrado.
-    CORREÇÃO: usa query parametrizada (sem SQL injection).
-    CORREÇÃO: trata timestamps com e sem timezone antes de normalizar para UTC naive.
-    """
     try:
         conn   = psycopg2.connect(DB_URL)
         cursor = conn.cursor()
-        # Query parametrizada — sem f-string com datas
         cursor.execute(
             """
             SELECT data_hora, temperatura, umidade, sensor_id
@@ -104,12 +58,10 @@ def carregar_dados(d1, d2):
             return df
 
         dt = pd.to_datetime(df["data_hora"])
-        # CORREÇÃO CRÍTICA: tz_convert lança TypeError se coluna for tz-naive
-        # Verifica presença de timezone antes de converter
         if dt.dt.tz is not None:
             df["data_hora"] = dt.dt.tz_convert("UTC").dt.tz_localize(None)
         else:
-            df["data_hora"] = dt  # Já naive — assume UTC (padrão do banco)
+            df["data_hora"] = dt
 
         return df
     except Exception as e:
@@ -119,17 +71,11 @@ def carregar_dados(d1, d2):
 
 @st.cache_data(ttl=300)
 def carregar_horas_frio():
-    """
-    Acúmulo de Horas de Frio nos últimos 90 dias — janela FIXA, independente do filtro.
-    CORREÇÃO: não usa o df filtrado pelo usuário (que daria 0h se filtrar 'hoje').
-    Conta horas DISTINTAS abaixo de 10°C para não multiplicar leituras por hora.
-    Meta agronômica para florada uniforme do Arábica: ~200h acumuladas.
-    """
     try:
         conn   = psycopg2.connect(DB_URL)
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT COUNT(DISTINCT DATE_TRUNC('hour', data_hora)) AS horas_frio
+            SELECT COUNT(DISTINCT DATE_TRUNC('hour', data_hora))
             FROM leituras_cafe
             WHERE temperatura < 10
               AND data_hora >= NOW() - INTERVAL '90 days'
@@ -143,10 +89,6 @@ def carregar_horas_frio():
 
 @st.cache_data(ttl=120)
 def carregar_sensores_disponiveis():
-    """
-    Busca sensor_ids do banco — suporte dinâmico a múltiplos sensores.
-    Novos ESP32 em campo aparecem automaticamente no filtro sem alterar o código.
-    """
     try:
         conn   = psycopg2.connect(DB_URL)
         cursor = conn.cursor()
@@ -155,10 +97,10 @@ def carregar_sensores_disponiveis():
         conn.close()
         return ["Todos"] + [r[0] for r in rows]
     except Exception:
-        return ["Todos", "ESP32_Fazenda"]  # Fallback se banco offline
+        return ["Todos", "ESP32_Fazenda"]
 
 # ============================================================
-# 4. SISTEMA DE LOGIN
+# 4. LOGIN
 # ============================================================
 def verifica_senha():
     SENHA_CORRETA = "agrobit2026"
@@ -183,7 +125,7 @@ def verifica_senha():
 if not verifica_senha():
     st.stop()
 
-# --- BARRA LATERAL ---
+# BARRA LATERAL
 st.sidebar.markdown("## ☕ top1nfo")
 st.sidebar.markdown("**Pedra Bonita — Matas de Minas**")
 st.sidebar.divider()
@@ -204,7 +146,7 @@ if st.sidebar.button("🚪 Logoff"):
     del st.session_state["autenticado"]
     st.rerun()
 
-# --- CARREGAMENTO E FILTRO ---
+# CARREGAMENTO
 df_completo = carregar_dados(data_ini, data_fim)
 
 if sensor_selecionado != "Todos" and not df_completo.empty:
@@ -212,7 +154,7 @@ if sensor_selecionado != "Todos" and not df_completo.empty:
 else:
     df = df_completo.copy()
 
-# --- CABEÇALHO ---
+# CABEÇALHO
 st.title("🚜 Painel de Inteligência Cafeeira")
 st.markdown("Monitoramento de precisão **top1nfo** — Córrego do Café, Pedra Bonita MG")
 st.divider()
@@ -234,9 +176,8 @@ dH = round(H - float(anterior["umidade"]), 1)
 
 orvalho    = calcular_ponto_orvalho(T, H)
 sensacao   = calcular_sensacao_termica(T, H)
-horas_frio = carregar_horas_frio()  # Janela fixa de 90 dias — independente do filtro
+horas_frio = carregar_horas_frio()
 
-# Flags de risco agronômico
 risco_geada       = T <= 4.0
 risco_phoma       = 10.0 <= T <= 18.0 and H > 85.0
 risco_ferrugem    = 18.0 <= T <= 24.0 and H > 90.0
@@ -251,19 +192,19 @@ c2.metric("💧 Umidade Relativa", f"{H} %",        f"{dH} %")
 c3.metric("🌫️ Ponto de Orvalho", f"{orvalho} °C", "Folha Seca" if T > orvalho + 2 else "⚠️ Risco Orvalho")
 c4.metric("🌡️ Sensação Térmica", f"{sensacao} °C")
 c5.metric("❄️ Horas de Frio",    f"{horas_frio} h",
-          help="Últimos 90 dias | Horas distintas abaixo de 10°C | Meta: 200h para florada uniforme do Arábica")
+          help="Últimos 90 dias | Meta: 200h para florada uniforme do Arábica")
 
 st.divider()
 
 # ============================================================
-# 8. ALERTAS AGRONÔMICOS
+# 8. ALERTAS — SOMENTE VISUAL, SEM WHATSAPP
+# CORREÇÃO: WhatsApp removido do dashboard.
+# O Worker já envia alertas 24h/dia com cooldown correto.
+# Manter aqui causava alertas duplicados a cada nova sessão.
 # ============================================================
 st.subheader("🚨 Alertas de Campo")
 algum_alerta = False
 
-# --- Sensor Offline ---
-# CORREÇÃO: datetime.now(timezone.utc) em vez de datetime.now() (hora local, UTC-3)
-# Sem isso a diferença seria sempre -180 min e o sensor NUNCA aparecia offline
 agora_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 diff_min  = max(0.0, (agora_utc - atual["data_hora"]).total_seconds() / 60)
 
@@ -273,12 +214,7 @@ if diff_min > 20:
         f"📡 **SENSOR OFFLINE** — Última leitura há {int(diff_min)} minutos. "
         "Verifique o ESP32 e a conexão Wi-Fi."
     )
-    enviar_alerta_whatsapp(
-        f"⚠️ ALERTA top1nfo: Sensor offline há {int(diff_min)} min. Verifique o ESP32!",
-        "ultimo_zap_offline"
-    )
 
-# --- Geada de Baixada (≤ 4°C) ---
 if risco_geada:
     algum_alerta = True
     st.error(
@@ -286,13 +222,7 @@ if risco_geada:
         "**Plano de Ação:** Mantenha as ruas limpas para escoamento do ar frio. "
         "Chegue terra no tronco das plantas novas. Evite irrigação noturna."
     )
-    enviar_alerta_whatsapp(
-        f"❄️ ALERTA GEADA top1nfo\nTemperatura: {T}°C\n\n"
-        "Ação: Ruas limpas, terra no tronco das novas, sem irrigação noturna.",
-        "ultimo_zap_geada"
-    )
 
-# --- Phoma (10°C–18°C + Umidade > 85%) ---
 if risco_phoma:
     algum_alerta = True
     st.warning(
@@ -300,38 +230,21 @@ if risco_phoma:
         "**Plano de Ação:** Vistorie brotações novas nas próximas 48h. "
         "Lesões escuras nos ramos = aplique cúpricos. Priorize lavouras em encosta."
     )
-    enviar_alerta_whatsapp(
-        f"🍄 ALERTA PHOMA top1nfo\nT:{T}°C | U:{H}%\n\n"
-        "Ação: Vistorie brotações 48h. Lesões escuras = cúpricos.",
-        "ultimo_zap_phoma"
-    )
 
-# --- Ferrugem Tardia (18°C–24°C + Umidade > 90%) ---
 if risco_ferrugem:
     algum_alerta = True
     st.warning(
         f"🟠 **RISCO DE FERRUGEM TARDIA** — {T}°C com {H}% de umidade\n\n"
-        "**Plano de Ação:** Amostragem foliar em 20 plantas representativas. "
+        "**Plano de Ação:** Amostragem foliar em 20 plantas. "
         "Se incidência > 5%, aplique fungicida sistêmico. Registre data e produto."
     )
-    enviar_alerta_whatsapp(
-        f"🟠 ALERTA FERRUGEM top1nfo\nT:{T}°C | U:{H}%\n\n"
-        "Ação: Amostragem foliar. Se >5% aplique sistêmico.",
-        "ultimo_zap_ferrugem"
-    )
 
-# --- Escaldadura (≥ 32°C) ---
 if risco_escaldadura:
     algum_alerta = True
     st.warning(
         f"🔥 **RISCO DE ESCALDADURA** — {T}°C\n\n"
         "**Plano de Ação:** NÃO roçar a braquiária nas entrelinhas agora. "
         "Cobertura vegetal protege a raiz. Irrigação somente pela manhã."
-    )
-    enviar_alerta_whatsapp(
-        f"🔥 ALERTA ESCALDADURA top1nfo\nT:{T}°C\n\n"
-        "Ação: Não roce entrelinhas. Irrigação só pela manhã.",
-        "ultimo_zap_escaldadura"
     )
 
 if not algum_alerta:
@@ -340,61 +253,38 @@ if not algum_alerta:
 st.divider()
 
 # ============================================================
-# 9. GRÁFICO PLOTLY
+# 9. GRÁFICO
 # ============================================================
 col_g1, col_g2 = st.columns([3, 1])
 
 with col_g1:
     st.markdown("### 📈 Evolução Climática")
     df_graf = df.sort_values("data_hora")
-
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
-        x=df_graf["data_hora"],
-        y=df_graf["temperatura"],
-        name="Temperatura (°C)",
-        line=dict(color="#E05C2A", width=2),
-        mode="lines"
+        x=df_graf["data_hora"], y=df_graf["temperatura"],
+        name="Temperatura (°C)", line=dict(color="#E05C2A", width=2), mode="lines"
     ))
-
     fig.add_trace(go.Scatter(
-        x=df_graf["data_hora"],
-        y=df_graf["umidade"],
-        name="Umidade (%)",
-        line=dict(color="#2A7AE0", width=2, dash="dot"),
-        mode="lines",
-        yaxis="y2"
+        x=df_graf["data_hora"], y=df_graf["umidade"],
+        name="Umidade (%)", line=dict(color="#2A7AE0", width=2, dash="dot"),
+        mode="lines", yaxis="y2"
     ))
-
-    # Linha de geada — referência visual permanente no gráfico
-    fig.add_hline(
-        y=4,
-        line=dict(color="cyan", width=1.5, dash="dash"),
-        annotation_text="⚠️ Limite de Geada (4°C)",
-        annotation_position="bottom right",
-        annotation_font_color="cyan"
-    )
-
-    # Linha de escaldadura
-    fig.add_hline(
-        y=32,
-        line=dict(color="red", width=1.5, dash="dash"),
-        annotation_text="🔥 Escaldadura (32°C)",
-        annotation_position="top right",
-        annotation_font_color="red"
-    )
-
+    fig.add_hline(y=4,  line=dict(color="cyan", width=1.5, dash="dash"),
+                  annotation_text="⚠️ Geada (4°C)",   annotation_position="bottom right",
+                  annotation_font_color="cyan")
+    fig.add_hline(y=32, line=dict(color="red",  width=1.5, dash="dash"),
+                  annotation_text="🔥 Escaldadura (32°C)", annotation_position="top right",
+                  annotation_font_color="red")
     fig.update_layout(
         height=420,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         xaxis=dict(title="Horário", gridcolor="#333"),
         yaxis=dict(title="Temperatura (°C)", side="left", gridcolor="#333"),
         yaxis2=dict(title="Umidade (%)", overlaying="y", side="right", gridcolor="#333"),
-        margin=dict(l=10, r=10, t=30, b=10),
-        hovermode="x unified"
+        margin=dict(l=10, r=10, t=30, b=10), hovermode="x unified"
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -415,16 +305,13 @@ with col_g2:
     st.markdown("**Acúmulo para Florada:**")
     progresso = min(horas_frio / META_HORAS_FRIO, 1.0)
     st.progress(progresso)
-    st.caption(f"{horas_frio}/{META_HORAS_FRIO}h ({int(progresso * 100)}%) — últimos 90 dias")
+    st.caption(f"{horas_frio}/{META_HORAS_FRIO}h ({int(progresso * 100)}%)")
 
-    # Botão único de download direto — sem duplo st.button
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="📊 Baixar CSV",
-        data=csv,
+        label="📊 Baixar CSV", data=csv,
         file_name=f"top1nfo_{data_ini}_{data_fim}.csv",
-        mime="text/csv",
-        use_container_width=True
+        mime="text/csv", use_container_width=True
     )
 
 # ============================================================
@@ -436,6 +323,5 @@ with st.expander("🔍 Log de Auditoria Completo"):
     st.caption(f"Sensores neste período: {', '.join(sensores_no_periodo)}")
     st.dataframe(
         df[["data_hora", "temperatura", "umidade", "sensor_id"]],
-        use_container_width=True,
-        hide_index=True
+        use_container_width=True, hide_index=True
     )
